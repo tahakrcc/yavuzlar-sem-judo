@@ -1,0 +1,10 @@
+{
+  "name": "yavuzlar-judo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Yavuzlar Sporcu Eğitim Merkezi - Judo Salonu web sitesi (Vercel)",
+  "dependencies": {
+    "@vercel/blob": "^0.27.0"
+  }
+}

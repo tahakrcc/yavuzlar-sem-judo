@@ -1,0 +1,4 @@
+_php-backup/
+data/
+uploads/
+**/.htaccess
