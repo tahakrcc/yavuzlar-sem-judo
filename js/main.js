@@ -11,13 +11,13 @@ function ph(bg1, bg2, label, h){
     <g fill='rgba(255,255,255,.10)'>
       <circle cx='300' cy='${cy-60}' r='58'/><rect x='252' y='${cy+10}' width='96' height='150' rx='40'/>
       <circle cx='520' cy='${cy-40}' r='52'/><rect x='476' y='${cy+22}' width='88' height='135' rx='38'/></g>
-    <text x='400' y='${H-42}' font-family='Georgia,serif' font-size='30' font-weight='700'
-      fill='rgba(255,255,255,.9)' text-anchor='middle'>${label}</text></svg>`;
+    ${label ? `<text x='400' y='${H-42}' font-family='Georgia,serif' font-size='30' font-weight='700'
+      fill='rgba(255,255,255,.9)' text-anchor='middle'>${label}</text>` : ''}</svg>`;
   return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
 }
 const N1='#0f1e37', N2='#17294a', RED='#c1122b', GOLD='#8a6a1f';
 const FALLBACK = {
-  hero: [{ id:'h1', src: ph(N1,N2,'YAVUZLAR JUDO',700), caption:'Antrenman Salonu' }],
+  hero: [{ id:'h1', src: ph(N1,N2,'',700), caption:'Antrenman Salonu' }],
   galeri: [
     { id:'g1', src: ph(N1,RED,'Müsabaka',760),    caption:'Türkiye Şampiyonası' },
     { id:'g2', src: ph(N2,N1,'Tatami',560),       caption:'Judo Minderi' },
