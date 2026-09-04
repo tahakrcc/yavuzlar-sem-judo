@@ -1,56 +1,69 @@
 // /api/photos — fotoğraf listele / ekle / sil / başlık güncelle (Vercel + Vercel Blob)
-import { put, del, list } from '@vercel/blob';
+// Model: her fotoğraf kendi blob dosyasıdır. Liste, dosyalardan üretilir.
+// Yol: ph/<section>/<id>~<base64url(caption)>.<ext>  (üzerine yazma yok → kayıp yok)
+import { put, del, list, copy } from '@vercel/blob';
 import { isAuthed, readBody } from '../lib/auth.js';
 
-const META = 'photos-meta.json';      // sabit yol → tek kayıt, silme yok
-const IMG_PREFIX  = 'img/';           // görsel blob'ları
+const ROOT = 'ph/';
+const SECTIONS = ['hero', 'galeri'];
 const ALLOWED = { 'image/jpeg':'jpg', 'image/png':'png', 'image/webp':'webp', 'image/gif':'gif' };
-const MAX_BYTES = 8 * 1024 * 1024;    // güvenli üst sınır
+const MAX_BYTES = 8 * 1024 * 1024;
+const SEP = '~'; // base64url'de bulunmayan, URL-güvenli ayraç
 
-function empty(){ return { hero: [], galeri: [] }; }
-
-async function readMeta(){
-  try{
-    const { blobs } = await list({ prefix: META, limit: 1 });
-    if (!blobs.length) return empty();
-    // önbelleği aşmak için sorgu ekiyle taze oku
-    const r = await fetch(blobs[0].url + '?_=' + Date.now(), { cache: 'no-store' });
-    if (!r.ok) return empty();
-    const d = await r.json();
-    return { hero: d.hero || [], galeri: d.galeri || [] };
-  }catch(e){ return empty(); }
-}
-
-async function writeMeta(data){
-  // sabit yol + üzerine yaz; silme/rastgele sonek yok (yarış/önbellek sorunlarını önler)
-  await put(META, JSON.stringify(data), {
-    access: 'public', contentType: 'application/json',
-    addRandomSuffix: false, allowOverwrite: true, cacheControlMaxAge: 0
-  });
-}
-
+function sec(s){ return s === 'hero' ? 'hero' : 'galeri'; }
 function uid(){ return 'p' + Date.now() + Math.random().toString(36).slice(2, 8); }
+function encCap(s){ return Buffer.from(String(s || ''), 'utf8').toString('base64url'); }
+function decCap(s){ try { return Buffer.from(String(s || ''), 'base64url').toString('utf8'); } catch { return ''; } }
+
+// pathname -> { id, caption, ext }
+function parseName(pathname){
+  const file = pathname.split('/').pop() || '';
+  const dot = file.lastIndexOf('.');
+  const ext = dot >= 0 ? file.slice(dot + 1) : '';
+  const base = dot >= 0 ? file.slice(0, dot) : file;
+  const i = base.indexOf(SEP);
+  const id = i >= 0 ? base.slice(0, i) : base;
+  const caption = i >= 0 ? decCap(base.slice(i + 1)) : '';
+  return { id, caption, ext };
+}
+
+async function listSection(section){
+  const items = [];
+  let cursor;
+  do {
+    const res = await list({ prefix: ROOT + section + '/', cursor, limit: 1000 });
+    for (const b of res.blobs){
+      const { id, caption } = parseName(b.pathname);
+      if (!id) continue;
+      items.push({ id, src: b.url, pathname: b.pathname, caption: caption || 'Fotoğraf', _t: b.uploadedAt });
+    }
+    cursor = res.hasMore ? res.cursor : undefined;
+  } while (cursor);
+  items.sort((a, b) => new Date(a._t) - new Date(b._t)); // eski→yeni
+  return items.map(({ _t, ...rest }) => rest);
+}
+
+async function findBlob(section, id){
+  const res = await list({ prefix: ROOT + section + '/' + id + SEP, limit: 1 });
+  return res.blobs[0] || null;
+}
 
 export default async function handler(req, res){
-  // Listeleme herkese açık
   if (req.method === 'GET'){
-    const data = await readMeta();
-    res.setHeader('Cache-Control', 'no-store');
-    return res.status(200).json({ ok: true, photos: data });
+    try{
+      const [hero, galeri] = await Promise.all([listSection('hero'), listSection('galeri')]);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({ ok: true, photos: { hero, galeri } });
+    }catch(e){
+      return res.status(200).json({ ok: true, photos: { hero: [], galeri: [] } });
+    }
   }
-  if (req.method !== 'POST'){
-    return res.status(405).json({ ok: false, error: 'Desteklenmeyen istek' });
-  }
-
-  // Yazma işlemleri yönetici gerektirir
-  if (!isAuthed(req)){
-    return res.status(401).json({ ok: false, error: 'Yetkisiz. Lütfen giriş yapın.' });
-  }
+  if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Desteklenmeyen istek' });
+  if (!isAuthed(req)) return res.status(401).json({ ok: false, error: 'Yetkisiz. Lütfen giriş yapın.' });
 
   const b = await readBody(req);
   const action = b.action || '';
-  const section = b.section === 'hero' ? 'hero' : 'galeri';
-  const data = await readMeta();
+  const section = sec(b.section);
 
   try{
     if (action === 'add'){
@@ -63,32 +76,30 @@ export default async function handler(req, res){
       if (buf.length > MAX_BYTES) return res.status(400).json({ ok: false, error: 'Dosya çok büyük.' });
 
       const id = uid();
-      const { url, pathname } = await put(`${IMG_PREFIX}${id}.${ext}`, buf, {
-        access: 'public', contentType: mime, addRandomSuffix: false
-      });
       const caption = (b.caption || '').toString().trim().slice(0, 120) || 'Fotoğraf';
-      const item = { id, src: url, pathname, caption };
-      data[section].push(item);
-      await writeMeta(data);
-      return res.status(200).json({ ok: true, item });
+      const pathname = `${ROOT}${section}/${id}${SEP}${encCap(caption)}.${ext}`;
+      const { url } = await put(pathname, buf, { access: 'public', contentType: mime, addRandomSuffix: false });
+      return res.status(200).json({ ok: true, item: { id, src: url, pathname, caption } });
     }
 
     if (action === 'delete'){
       const id = String(b.id || '');
-      const found = data[section].find(p => p.id === id);
-      data[section] = data[section].filter(p => p.id !== id);
-      await writeMeta(data);
-      if (found){ try{ await del(found.pathname || found.src); }catch(e){} }
+      const blob = await findBlob(section, id);
+      if (blob) await del(blob.url);
       return res.status(200).json({ ok: true });
     }
 
     if (action === 'update'){
       const id = String(b.id || '');
-      const cap = (b.caption || '').toString().trim().slice(0, 120) || 'Fotoğraf';
-      const it = data[section].find(p => p.id === id);
-      if (!it) return res.status(404).json({ ok: false, error: 'Fotoğraf bulunamadı.' });
-      it.caption = cap;
-      await writeMeta(data);
+      const caption = (b.caption || '').toString().trim().slice(0, 120) || 'Fotoğraf';
+      const blob = await findBlob(section, id);
+      if (!blob) return res.status(404).json({ ok: false, error: 'Fotoğraf bulunamadı.' });
+      const { ext } = parseName(blob.pathname);
+      const newPath = `${ROOT}${section}/${id}${SEP}${encCap(caption)}.${ext}`;
+      if (newPath !== blob.pathname){
+        await copy(blob.url, newPath, { access: 'public' });
+        await del(blob.url);
+      }
       return res.status(200).json({ ok: true });
     }
 
