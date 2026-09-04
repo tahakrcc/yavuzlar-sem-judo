@@ -2,7 +2,7 @@
 import { put, del, list } from '@vercel/blob';
 import { isAuthed, readBody } from '../lib/auth.js';
 
-const META_PREFIX = 'meta/photos-';   // meta blob'ları (rastgele sonek → taze okuma)
+const META = 'photos-meta.json';      // sabit yol → tek kayıt, silme yok
 const IMG_PREFIX  = 'img/';           // görsel blob'ları
 const ALLOWED = { 'image/jpeg':'jpg', 'image/png':'png', 'image/webp':'webp', 'image/gif':'gif' };
 const MAX_BYTES = 8 * 1024 * 1024;    // güvenli üst sınır
@@ -11,27 +11,22 @@ function empty(){ return { hero: [], galeri: [] }; }
 
 async function readMeta(){
   try{
-    const { blobs } = await list({ prefix: META_PREFIX });
+    const { blobs } = await list({ prefix: META, limit: 1 });
     if (!blobs.length) return empty();
-    // en son yüklenen meta blob'u
-    blobs.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
-    const r = await fetch(blobs[0].url, { cache: 'no-store' });
+    // önbelleği aşmak için sorgu ekiyle taze oku
+    const r = await fetch(blobs[0].url + '?_=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return empty();
     const d = await r.json();
     return { hero: d.hero || [], galeri: d.galeri || [] };
   }catch(e){ return empty(); }
 }
 
 async function writeMeta(data){
-  const { url } = await put(META_PREFIX + 'current.json', JSON.stringify(data), {
+  // sabit yol + üzerine yaz; silme/rastgele sonek yok (yarış/önbellek sorunlarını önler)
+  await put(META, JSON.stringify(data), {
     access: 'public', contentType: 'application/json',
-    addRandomSuffix: true, cacheControlMaxAge: 0
+    addRandomSuffix: false, allowOverwrite: true, cacheControlMaxAge: 0
   });
-  // eski meta blob'larını temizle
-  try{
-    const { blobs } = await list({ prefix: META_PREFIX });
-    const olds = blobs.filter(b => b.url !== url).map(b => b.url);
-    if (olds.length) await del(olds);
-  }catch(e){}
 }
 
 function uid(){ return 'p' + Date.now() + Math.random().toString(36).slice(2, 8); }
